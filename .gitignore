@@ -1,1 +1,5 @@
+.cache
 build
+.DS_Store
+google-services.json
+aicontacts-3b752-firebase-adminsdk-fbsvc-e4d1df167c.json
