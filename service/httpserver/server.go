@@ -42,6 +42,7 @@ func Run(ctx context.Context, cfg Config) error {
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/create/agent/v1", agentHandler.CreateAgent)
+	mux.HandleFunc("/agents", agentHandler.ListAgents)
 	mux.HandleFunc("/agent/chat/agentid", agentHandler.ChatWithAgent)
 
 	srv := &http.Server{Addr: addr, Handler: mux}

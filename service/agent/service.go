@@ -28,11 +28,20 @@ const (
 
 // Agent represents the payload used to create a new agent profile.
 type Agent struct {
-	ID           primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
-	Name         string             `json:"name" bson:"name"`
-	Personality  string             `json:"personality" bson:"personality"`
-	Gender       string             `json:"gender" bson:"gender"`
-	SystemPrompt string             `json:"system_prompt,omitempty" bson:"system_prompt,omitempty"`
+	ID              primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Name            string             `json:"name" bson:"name"`
+	Personality     string             `json:"personality" bson:"personality"`
+	Gender          string             `json:"gender" bson:"gender"`
+	SystemPrompt    string             `json:"system_prompt,omitempty" bson:"system_prompt,omitempty"`
+	ProfileImageURL string             `json:"profile_image_url,omitempty" bson:"profile_image_url,omitempty"`
+}
+
+type agentListItem struct {
+	ID              primitive.ObjectID `json:"id"`
+	Name            string             `json:"name"`
+	Personality     string             `json:"personality"`
+	Gender          string             `json:"gender"`
+	ProfileImageURL string             `json:"profile_image_url,omitempty"`
 }
 
 type chatRequest struct {
@@ -92,17 +101,19 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload.SystemPrompt = buildSystemPrompt(payload.Name, payload.Personality, payload.Gender)
+	profileImageURL := ""
 
 	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
 	defer dbCancel()
 
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
 	doc := bson.M{
-		"name":          payload.Name,
-		"personality":   payload.Personality,
-		"gender":        payload.Gender,
-		"system_prompt": payload.SystemPrompt,
-		"created_at":    time.Now().UTC(),
+		"name":              payload.Name,
+		"personality":       payload.Personality,
+		"gender":            payload.Gender,
+		"system_prompt":     payload.SystemPrompt,
+		"profile_image_url": profileImageURL,
+		"created_at":        time.Now().UTC(),
 	}
 	result, err := collection.InsertOne(dbCtx, doc)
 
@@ -114,11 +125,53 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":          result.InsertedID,
-		"name":        payload.Name,
-		"personality": payload.Personality,
-		"gender":      payload.Gender,
+		"id":                result.InsertedID,
+		"name":              payload.Name,
+		"personality":       payload.Personality,
+		"gender":            payload.Gender,
+		"profile_image_url": profileImageURL,
 	})
+}
+
+// ListAgents exposes all stored agents without revealing their system prompts.
+func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
+	defer dbCancel()
+
+	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
+	cursor, err := collection.Find(dbCtx, bson.D{})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to fetch agents: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(dbCtx)
+
+	var stored []Agent
+	if err := cursor.All(dbCtx, &stored); err != nil {
+		http.Error(w, fmt.Sprintf("failed to load agents: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]agentListItem, 0, len(stored))
+	for _, a := range stored {
+		items = append(items, agentListItem{
+			ID:              a.ID,
+			Name:            a.Name,
+			Personality:     a.Personality,
+			Gender:          a.Gender,
+			ProfileImageURL: a.ProfileImageURL,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"agents": items}); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
 }
 
 // ChatWithAgent receives a prompt for an existing agent, loads its system prompt, and
