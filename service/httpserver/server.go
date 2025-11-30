@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"buddy-agent/service/agent"
 )
 
-const apiVersionPrefix = "/v1"
+const apiVersionPrefix = "/api/v1"
 
 func apiVersionPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
@@ -19,6 +20,14 @@ func apiVersionPath(path string) string {
 		return apiVersionPrefix
 	}
 	return apiVersionPrefix + "/" + path
+}
+
+func servicePort() string {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		return "8080"
+	}
+	return port
 }
 
 // Config controls how the HTTP service listener behaves.
@@ -33,7 +42,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	addr := strings.TrimSpace(cfg.Addr)
 	if addr == "" {
-		addr = ":8080"
+		addr = fmt.Sprintf(":%s", servicePort())
 	}
 
 	agentHandler, err := agent.NewHandler(ctx)
