@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"buddy-agent/cmd/chatcli"
+	"buddy-agent/service/httpserver"
 )
 
 func main() {
@@ -22,12 +25,28 @@ func main() {
 	ensureDefaultCredentials("google-services.json")
 
 	chatMode := flag.Bool("chat", false, "Run the interactive chat CLI")
+	serviceMode := flag.Bool("service", false, "Run the HTTP service listener")
 	apiKey := flag.String("api-key", os.Getenv("GOOGLE_API_KEY"), "Google API key for the Generative Language API (use GOOGLE_API_KEY)")
 	model := flag.String("model", os.Getenv("GOOGLE_CHAT_MODEL"), "Google Generative Language model (default gemini-1.5-flash-latest)")
 	role := flag.String("role", "user", "Role used for user prompts")
 	timeout := flag.Duration("timeout", 2*time.Minute, "Per-request timeout")
 	firebaseDBURL := flag.String("firebase-db-url", os.Getenv("FIREBASE_DATABASE_URL"), "Firebase Realtime Database URL (use FIREBASE_DATABASE_URL)")
+	serviceAddr := flag.String("service-addr", defaultServiceAddr(), "HTTP service listen address (use SERVICE_ADDR)")
 	flag.Parse()
+
+	if *chatMode && *serviceMode {
+		log.Fatal("cannot run chat CLI and service simultaneously")
+	}
+
+	if *serviceMode {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		cfg := httpserver.Config{Addr: *serviceAddr}
+		if err := httpserver.Run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	if *chatMode {
 		cfg := chatcli.Config{
@@ -100,4 +119,11 @@ func ensureDefaultCredentials(path string) {
 		return
 	}
 	_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", abs)
+}
+
+func defaultServiceAddr() string {
+	if addr := strings.TrimSpace(os.Getenv("SERVICE_ADDR")); addr != "" {
+		return addr
+	}
+	return ":8080"
 }
