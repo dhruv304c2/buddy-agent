@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"buddy-agent/llmservice"
+	"buddy-agent/service/llmservice"
 	firebaseclient "buddy-agent/internal/firebase"
 	"firebase.google.com/go/v4/db"
 	"github.com/briandowns/spinner"
