@@ -1,23 +1,17 @@
 package llmservice
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/option"
 )
 
-const (
-	defaultModel        = "gemini-1.5-flash-latest"
-	generativeBaseURL   = "https://generativelanguage.googleapis.com/v1"
-	defaultRequestLimit = 30 * time.Second
-)
+const defaultModel = "gemini-1.5-flash-latest"
 
 // Message mirrors the JSON pushed into Firebase for chat transcripts.
 type Message struct {
@@ -34,9 +28,9 @@ type Config struct {
 
 // Client wraps the Google Generative Language API and keeps the chat history for context aware prompts.
 type Client struct {
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	genClient *genai.Client
+	model     *genai.GenerativeModel
+	chat      *genai.ChatSession
 
 	historyMu sync.RWMutex
 	history   []Message
@@ -48,17 +42,26 @@ func NewClient(cfg Config) (*Client, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api key is required")
 	}
-	model := strings.TrimSpace(cfg.Model)
-	if model == "" {
-		model = defaultModel
+	modelName := strings.TrimSpace(cfg.Model)
+	if modelName == "" {
+		modelName = defaultModel
 	}
 
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultRequestLimit}
+	opts := []option.ClientOption{option.WithAPIKey(apiKey)}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 
-	return &Client{apiKey: apiKey, model: model, httpClient: httpClient}, nil
+	client, err := genai.NewClient(context.Background(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("initialize gemini client: %w", err)
+	}
+	model := client.GenerativeModel(modelName)
+	return &Client{
+		genClient: client,
+		model:     model,
+		chat:      model.StartChat(),
+	}, nil
 }
 
 // SendPrompt stores the provided role/prompt in the running history and issues a request that includes
@@ -72,46 +75,21 @@ func (c *Client) SendPrompt(ctx context.Context, role, prompt string) (string, e
 		return "", err
 	}
 
-	history := c.appendAndSnapshot(userMsg)
-	contents := messagesToContents(history)
-	if len(contents) == 0 {
-		return "", fmt.Errorf("prompt is required")
-	}
-
-	reqBody, err := json.Marshal(generateContentRequest{Contents: contents})
+	c.appendAndSnapshot(userMsg)
+	resp, err := c.chat.SendMessage(ctx, genai.Text(userMsg.Content))
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("google api error: %w", err)
 	}
-
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent?%s", generativeBaseURL, url.PathEscape(c.model), url.Values{"key": []string{c.apiKey}}.Encode())
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("google api error (%d): %s", resp.StatusCode, readAPIError(resp.Body))
-	}
-
-	var gcResp generateContentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&gcResp); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	if len(gcResp.Candidates) == 0 {
+	if len(resp.Candidates) == 0 {
 		return "", fmt.Errorf("google api returned no candidates")
 	}
-	for _, part := range gcResp.Candidates[0].Content.Parts {
-		if text := strings.TrimSpace(part.Text); text != "" {
-			c.appendAssistantMessage(text)
-			return text, nil
+	for _, part := range resp.Candidates[0].Content.Parts {
+		text := extractTextPart(part)
+		if text == "" {
+			continue
 		}
+		c.appendAssistantMessage(text)
+		return text, nil
 	}
 
 	return "", fmt.Errorf("google api returned empty response")
@@ -132,6 +110,9 @@ func (c *Client) ResetHistory() {
 	c.historyMu.Lock()
 	c.history = nil
 	c.historyMu.Unlock()
+	if c.model != nil {
+		c.chat = c.model.StartChat()
+	}
 }
 
 func (c *Client) appendAndSnapshot(msg Message) []Message {
@@ -167,71 +148,11 @@ func sanitizeMessage(role, content string) (Message, error) {
 	return Message{Role: role, Content: content}, nil
 }
 
-func messagesToContents(history []Message) []content {
-	contents := make([]content, 0, len(history))
-	for _, msg := range history {
-		role := normalizeAPIRole(msg.Role)
-		text := strings.TrimSpace(msg.Content)
-		if text == "" {
-			continue
-		}
-		contents = append(contents, content{Role: role, Parts: []part{{Text: text}}})
-	}
-	return contents
-}
-
-// Gemini currently allows only "user" and "model" roles. This helper maps stored
-// roles (which also include "assistant" for Firebase compatibility) into the
-// expected values.
-func normalizeAPIRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "model", "assistant":
-		return "model"
-	case "user":
-		return "user"
+func extractTextPart(part genai.Part) string {
+	switch v := part.(type) {
+	case genai.Text:
+		return strings.TrimSpace(string(v))
 	default:
-		return "user"
+		return ""
 	}
-}
-
-func readAPIError(r io.Reader) string {
-	raw, _ := io.ReadAll(r)
-	var apiErr struct {
-		Error struct {
-			Message string `json:"message"`
-			Status  string `json:"status"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &apiErr); err == nil && apiErr.Error.Message != "" {
-		if apiErr.Error.Status != "" {
-			return fmt.Sprintf("%s (%s)", apiErr.Error.Message, apiErr.Error.Status)
-		}
-		return apiErr.Error.Message
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		trimmed = "no response body"
-	}
-	return trimmed
-}
-
-type generateContentRequest struct {
-	Contents []content `json:"contents"`
-}
-
-type content struct {
-	Role  string `json:"role,omitempty"`
-	Parts []part `json:"parts"`
-}
-
-type part struct {
-	Text string `json:"text,omitempty"`
-}
-
-type generateContentResponse struct {
-	Candidates []candidate `json:"candidates"`
-}
-
-type candidate struct {
-	Content content `json:"content"`
 }
