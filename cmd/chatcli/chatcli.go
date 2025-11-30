@@ -21,7 +21,8 @@ const firebaseWriteTimeout = 5 * time.Second
 
 // Config controls how the interactive chat CLI behaves.
 type Config struct {
-	BaseURL             string
+	APIKey              string
+	Model               string
 	Role                string
 	Timeout             time.Duration
 	FirebaseDatabaseURL string
@@ -33,14 +34,14 @@ func Run(ctx context.Context, cfg Config) error {
 		ctx = context.Background()
 	}
 
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		return fmt.Errorf("chat service base URL is required (use -base-url or CHAT_BASE_URL)")
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return fmt.Errorf("google api key is required (use -api-key or GOOGLE_API_KEY)")
 	}
 	if strings.TrimSpace(cfg.FirebaseDatabaseURL) == "" {
 		return fmt.Errorf("firebase database URL is required (use -firebase-db-url or FIREBASE_DATABASE_URL)")
 	}
 
-	client, err := chatclient.NewClient(cfg.BaseURL, nil)
+	client, err := chatclient.NewClient(chatclient.Config{APIKey: cfg.APIKey, Model: cfg.Model})
 	if err != nil {
 		return fmt.Errorf("configure chat client: %w", err)
 	}

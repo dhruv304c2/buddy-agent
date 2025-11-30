@@ -12,56 +12,52 @@ import (
 	"time"
 )
 
-// Message mirrors the payload expected by the vertex-go chat service.
+const (
+	defaultModel        = "gemini-1.5-flash-latest"
+	generativeBaseURL   = "https://generativelanguage.googleapis.com/v1"
+	defaultRequestLimit = 30 * time.Second
+)
+
+// Message mirrors the JSON pushed into Firebase for chat transcripts.
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// chatRequest is the outbound request body.
-type chatRequest struct {
-	Messages []Message `json:"messages"`
+// Config controls how the Google Generative Language API client behaves.
+type Config struct {
+	APIKey     string
+	Model      string
+	HTTPClient *http.Client
 }
 
-// chatResponse is the successful response shape.
-type chatResponse struct {
-	Response string `json:"response"`
-}
-
-// errorResponse represents error payloads returned by the service.
-type errorResponse struct {
-	Error string `json:"error"`
-}
-
-// Client wraps the connection details required to reach the chat API over HTTPS.
+// Client wraps the Google Generative Language API.
 type Client struct {
-	baseURL    string
+	apiKey     string
+	model      string
 	httpClient *http.Client
 }
 
-// NewClient configures a Client pointed at the HTTPS vertex-go chat service.
-func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return nil, fmt.Errorf("baseURL is required")
+// NewClient validates the provided configuration and prepares a Client instance.
+func NewClient(cfg Config) (*Client, error) {
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("api key is required")
+	}
+	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		model = defaultModel
 	}
 
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid baseURL: %w", err)
-	}
-	if parsed.Scheme == "" {
-		parsed.Scheme = "http"
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
-
+	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = &http.Client{Timeout: defaultRequestLimit}
 	}
 
-	return &Client{baseURL: parsed.String(), httpClient: httpClient}, nil
+	return &Client{apiKey: apiKey, model: model, httpClient: httpClient}, nil
 }
 
-// SendPrompt posts the provided role/prompt to the chat API and returns the assistant's response text.
+// SendPrompt sends the provided role/prompt to the Google Generative Language API and returns the assistant's reply text.
 func (c *Client) SendPrompt(ctx context.Context, role, prompt string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("client is nil")
@@ -75,40 +71,89 @@ func (c *Client) SendPrompt(ctx context.Context, role, prompt string) (string, e
 		return "", fmt.Errorf("prompt is required")
 	}
 
-	reqBody, err := json.Marshal(chatRequest{Messages: []Message{{Role: role, Content: prompt}}})
+	reqBody, err := json.Marshal(generateContentRequest{
+		Contents: []content{
+			{
+				Role:  role,
+				Parts: []part{{Text: prompt}},
+			},
+		},
+	})
 	if err != nil {
-		return "", fmt.Errorf("marshal chat request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	chatURL := strings.TrimRight(c.baseURL, "/") + "/chat"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(reqBody))
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent?%s", generativeBaseURL, url.PathEscape(c.model), url.Values{"key": []string{c.apiKey}}.Encode())
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("create chat request: %w", err)
+		return "", fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("send chat request: %w", err)
+		return "", fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var apiErr errorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && apiErr.Error != "" {
-			return "", fmt.Errorf("chat api error (%d): %s", resp.StatusCode, apiErr.Error)
+		return "", fmt.Errorf("google api error (%d): %s", resp.StatusCode, readAPIError(resp.Body))
+	}
+
+	var gcResp generateContentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&gcResp); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if len(gcResp.Candidates) == 0 {
+		return "", fmt.Errorf("google api returned no candidates")
+	}
+	for _, part := range gcResp.Candidates[0].Content.Parts {
+		if text := strings.TrimSpace(part.Text); text != "" {
+			return text, nil
 		}
-		rawBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("chat api error (%d): %s", resp.StatusCode, strings.TrimSpace(string(rawBody)))
 	}
 
-	var cr chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return "", fmt.Errorf("decode chat response: %w", err)
-	}
-	if strings.TrimSpace(cr.Response) == "" {
-		return "", fmt.Errorf("chat api returned empty response")
-	}
+	return "", fmt.Errorf("google api returned empty response")
+}
 
-	return cr.Response, nil
+func readAPIError(r io.Reader) string {
+	raw, _ := io.ReadAll(r)
+	var apiErr struct {
+		Error struct {
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &apiErr); err == nil && apiErr.Error.Message != "" {
+		if apiErr.Error.Status != "" {
+			return fmt.Sprintf("%s (%s)", apiErr.Error.Message, apiErr.Error.Status)
+		}
+		return apiErr.Error.Message
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		trimmed = "no response body"
+	}
+	return trimmed
+}
+
+type generateContentRequest struct {
+	Contents []content `json:"contents"`
+}
+
+type content struct {
+	Role  string `json:"role,omitempty"`
+	Parts []part `json:"parts"`
+}
+
+type part struct {
+	Text string `json:"text,omitempty"`
+}
+
+type generateContentResponse struct {
+	Candidates []candidate `json:"candidates"`
+}
+
+type candidate struct {
+	Content content `json:"content"`
 }

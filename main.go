@@ -22,7 +22,8 @@ func main() {
 	ensureDefaultCredentials("google-services.json")
 
 	chatMode := flag.Bool("chat", false, "Run the interactive chat CLI")
-	baseURL := flag.String("base-url", os.Getenv("CHAT_BASE_URL"), "HTTPS base URL of the vertex-go chat service")
+	apiKey := flag.String("api-key", os.Getenv("GOOGLE_API_KEY"), "Google API key for the Generative Language API (use GOOGLE_API_KEY)")
+	model := flag.String("model", os.Getenv("GOOGLE_CHAT_MODEL"), "Google Generative Language model (default gemini-1.5-flash-latest)")
 	role := flag.String("role", "user", "Role used for user prompts")
 	timeout := flag.Duration("timeout", 2*time.Minute, "Per-request timeout")
 	firebaseDBURL := flag.String("firebase-db-url", os.Getenv("FIREBASE_DATABASE_URL"), "Firebase Realtime Database URL (use FIREBASE_DATABASE_URL)")
@@ -30,7 +31,8 @@ func main() {
 
 	if *chatMode {
 		cfg := chatcli.Config{
-			BaseURL:             *baseURL,
+			APIKey:              *apiKey,
+			Model:               *model,
 			Role:                *role,
 			Timeout:             *timeout,
 			FirebaseDatabaseURL: *firebaseDBURL,
