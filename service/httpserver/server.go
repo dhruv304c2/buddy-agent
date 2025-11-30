@@ -11,6 +11,16 @@ import (
 	"buddy-agent/service/agent"
 )
 
+const apiVersionPrefix = "/v1"
+
+func apiVersionPath(path string) string {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return apiVersionPrefix
+	}
+	return apiVersionPrefix + "/" + path
+}
+
 // Config controls how the HTTP service listener behaves.
 type Config struct {
 	Addr string
@@ -33,17 +43,17 @@ func Run(ctx context.Context, cfg Config) error {
 	defer agentHandler.Close(context.Background())
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(apiVersionPath(""), func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "buddy-agent service online")
 	})
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(apiVersionPath("/healthz"), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
-	mux.HandleFunc("/create/agent/v1", agentHandler.CreateAgent)
-	mux.HandleFunc("/agents", agentHandler.ListAgents)
-	mux.HandleFunc("/agent/chat/agentid", agentHandler.ChatWithAgent)
+	mux.HandleFunc(apiVersionPath("/create/agent"), agentHandler.CreateAgent)
+	mux.HandleFunc(apiVersionPath("/agents"), agentHandler.ListAgents)
+	mux.HandleFunc(apiVersionPath("/agent/chat/agentid"), agentHandler.ChatWithAgent)
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	errCh := make(chan error, 1)
