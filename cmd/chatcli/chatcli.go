@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"buddy-agent/chatclient"
+	"buddy-agent/llmservice"
 	firebaseclient "buddy-agent/internal/firebase"
 	"firebase.google.com/go/v4/db"
 	"github.com/briandowns/spinner"
@@ -41,7 +41,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("firebase database URL is required (use -firebase-db-url or FIREBASE_DATABASE_URL)")
 	}
 
-	client, err := chatclient.NewClient(chatclient.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	client, err := llmservice.NewClient(llmservice.Config{APIKey: cfg.APIKey, Model: cfg.Model})
 	if err != nil {
 		return fmt.Errorf("configure chat client: %w", err)
 	}
@@ -69,7 +69,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return nil
 		}
 
-		storeChatMessage(ctx, fbClient, chatclient.Message{Role: cfg.Role, Content: prompt})
+		storeChatMessage(ctx, fbClient, llmservice.Message{Role: cfg.Role, Content: prompt})
 
 		reqCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		stopLoader := startThinkingLoader()
@@ -82,7 +82,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 
 		fmt.Printf("%s %s\n", roleLabel("Assistant:"), resp)
-		storeChatMessage(ctx, fbClient, chatclient.Message{Role: "assistant", Content: resp})
+		storeChatMessage(ctx, fbClient, llmservice.Message{Role: "assistant", Content: resp})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -109,11 +109,11 @@ func roleLabel(text string) string {
 	return color.New(color.FgHiCyan).Sprint(text)
 }
 
-func storeChatMessage(ctx context.Context, dbClient *db.Client, msg chatclient.Message) {
+func storeChatMessage(ctx context.Context, dbClient *db.Client, msg llmservice.Message) {
 	if dbClient == nil {
 		return
 	}
-	safeMsg := chatclient.Message{
+	safeMsg := llmservice.Message{
 		Role:    strings.TrimSpace(msg.Role),
 		Content: strings.TrimSpace(msg.Content),
 	}

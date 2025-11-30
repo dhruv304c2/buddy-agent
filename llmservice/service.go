@@ -1,4 +1,4 @@
-package chatclient
+package llmservice
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,11 +32,14 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// Client wraps the Google Generative Language API.
+// Client wraps the Google Generative Language API and keeps the chat history for context aware prompts.
 type Client struct {
 	apiKey     string
 	model      string
 	httpClient *http.Client
+
+	historyMu sync.RWMutex
+	history   []Message
 }
 
 // NewClient validates the provided configuration and prepares a Client instance.
@@ -57,28 +61,24 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{apiKey: apiKey, model: model, httpClient: httpClient}, nil
 }
 
-// SendPrompt sends the provided role/prompt to the Google Generative Language API and returns the assistant's reply text.
+// SendPrompt stores the provided role/prompt in the running history and issues a request that includes
+// the full conversation for better responses.
 func (c *Client) SendPrompt(ctx context.Context, role, prompt string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("client is nil")
 	}
-	role = strings.TrimSpace(role)
-	if role == "" {
-		role = "user"
+	userMsg, err := sanitizeMessage(role, prompt)
+	if err != nil {
+		return "", err
 	}
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
+
+	history := c.appendAndSnapshot(userMsg)
+	contents := messagesToContents(history)
+	if len(contents) == 0 {
 		return "", fmt.Errorf("prompt is required")
 	}
 
-	reqBody, err := json.Marshal(generateContentRequest{
-		Contents: []content{
-			{
-				Role:  role,
-				Parts: []part{{Text: prompt}},
-			},
-		},
-	})
+	reqBody, err := json.Marshal(generateContentRequest{Contents: contents})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
@@ -109,11 +109,89 @@ func (c *Client) SendPrompt(ctx context.Context, role, prompt string) (string, e
 	}
 	for _, part := range gcResp.Candidates[0].Content.Parts {
 		if text := strings.TrimSpace(part.Text); text != "" {
+			c.appendAssistantMessage(text)
 			return text, nil
 		}
 	}
 
 	return "", fmt.Errorf("google api returned empty response")
+}
+
+// History returns a copy of the current chat history.
+func (c *Client) History() []Message {
+	c.historyMu.RLock()
+	defer c.historyMu.RUnlock()
+
+	history := make([]Message, len(c.history))
+	copy(history, c.history)
+	return history
+}
+
+// ResetHistory clears all stored chat context.
+func (c *Client) ResetHistory() {
+	c.historyMu.Lock()
+	c.history = nil
+	c.historyMu.Unlock()
+}
+
+func (c *Client) appendAndSnapshot(msg Message) []Message {
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+
+	c.history = append(c.history, msg)
+	snapshot := make([]Message, len(c.history))
+	copy(snapshot, c.history)
+	return snapshot
+}
+
+func (c *Client) appendAssistantMessage(text string) {
+	assistant := Message{Role: "assistant", Content: strings.TrimSpace(text)}
+	if assistant.Content == "" {
+		return
+	}
+
+	c.historyMu.Lock()
+	c.history = append(c.history, assistant)
+	c.historyMu.Unlock()
+}
+
+func sanitizeMessage(role, content string) (Message, error) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "user"
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return Message{}, fmt.Errorf("prompt is required")
+	}
+	return Message{Role: role, Content: content}, nil
+}
+
+func messagesToContents(history []Message) []content {
+	contents := make([]content, 0, len(history))
+	for _, msg := range history {
+		role := normalizeAPIRole(msg.Role)
+		text := strings.TrimSpace(msg.Content)
+		if text == "" {
+			continue
+		}
+		contents = append(contents, content{Role: role, Parts: []part{{Text: text}}})
+	}
+	return contents
+}
+
+// Gemini currently allows only "user" and "model" roles. This helper maps stored
+// roles (which also include "assistant" for Firebase compatibility) into the
+// expected values.
+func normalizeAPIRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "model", "assistant":
+		return "model"
+	case "user":
+		return "user"
+	default:
+		return "user"
+	}
 }
 
 func readAPIError(r io.Reader) string {
