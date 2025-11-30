@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"buddy-agent/service/llmservice"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -25,10 +28,15 @@ const (
 
 // Agent represents the payload used to create a new agent profile.
 type Agent struct {
-	Name         string `json:"name"`
-	Personality  string `json:"personality"`
-	Gender       string `json:"gender"`
-	SystemPrompt string `json:"system_prompt,omitempty"`
+	ID           primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Name         string             `json:"name" bson:"name"`
+	Personality  string             `json:"personality" bson:"personality"`
+	Gender       string             `json:"gender" bson:"gender"`
+	SystemPrompt string             `json:"system_prompt,omitempty" bson:"system_prompt,omitempty"`
+}
+
+type chatRequest struct {
+	Prompt string `json:"prompt"`
 }
 
 // Handler coordinates agent related HTTP handlers backed by MongoDB and LLM.
@@ -83,29 +91,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	llmCtx, llmCancel := context.WithTimeout(r.Context(), llmRequestTimeout)
-	defer llmCancel()
-
-	systemPromptQuery := fmt.Sprintf(
-		`
-			A new agent named '%s' with personality '%s' and gender '%s' has been created.
-			return a system prompt for this agent in raw text format.
-		`,
-		payload.Name,
-		payload.Personality,
-		payload.Gender,
-	)
-
-	systemPrompt, err := h.llm.SendPrompt(
-		llmCtx,
-		"user",
-		systemPromptQuery,
-	)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate system prompt: %v", err), http.StatusBadGateway)
-		return
-	}
-	payload.SystemPrompt = systemPrompt
+	payload.SystemPrompt = buildSystemPrompt(payload.Name, payload.Personality, payload.Gender)
 
 	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
 	defer dbCancel()
@@ -133,6 +119,92 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		"personality": payload.Personality,
 		"gender":      payload.Gender,
 	})
+}
+
+// ChatWithAgent receives a prompt for an existing agent, loads its system prompt, and
+// forwards the combined input to the LLM before returning the assistant response.
+func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentIDHex := strings.TrimSpace(r.URL.Query().Get("agentId"))
+	if agentIDHex == "" {
+		http.Error(w, "agentId is required", http.StatusBadRequest)
+		return
+	}
+	agentID, err := primitive.ObjectIDFromHex(agentIDHex)
+	if err != nil {
+		http.Error(w, "invalid agentId", http.StatusBadRequest)
+		return
+	}
+
+	var req chatRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
+	defer dbCancel()
+	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
+	var stored Agent
+	if err := collection.FindOne(dbCtx, bson.M{"_id": agentID}).Decode(&stored); err != nil {
+		status := http.StatusInternalServerError
+		msg := fmt.Sprintf("failed to load agent: %v", err)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			status = http.StatusNotFound
+			msg = "agent not found"
+		}
+		http.Error(w, msg, status)
+		return
+	}
+
+	combinedPrompt := buildChatPrompt(stored.SystemPrompt, req.Prompt)
+	llmCtx, llmCancel := context.WithTimeout(r.Context(), llmRequestTimeout)
+	defer llmCancel()
+
+	response, err := h.llm.SendPrompt(llmCtx, "user", combinedPrompt)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to fetch response: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"agent_id": agentIDHex,
+		"response": response,
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+func buildChatPrompt(systemPrompt, userPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	userPrompt = strings.TrimSpace(userPrompt)
+	if systemPrompt == "" {
+		return userPrompt
+	}
+	return fmt.Sprintf("%s\n\nUser prompt:\n%s", systemPrompt, userPrompt)
+}
+
+func buildSystemPrompt(name, personality, gender string) string {
+	return strings.TrimSpace(fmt.Sprintf(
+		`You are %s, a human-like friend. Personality: %s. Gender identity: %s.
+	Stay in character like a close friend chatting over text: short sentences, natural tone, light slang or emojis when it fits.
+	Be supportive, practical, and concise while keeping responses warm and human.`,
+		name,
+		personality,
+		gender,
+	))
 }
 
 func mongoDatabaseName() string {
