@@ -27,6 +27,7 @@ const (
 type Agent struct {
 	Name         string `json:"name"`
 	Personality  string `json:"personality"`
+	Gender       string `json:"gender"`
 	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
@@ -76,25 +77,29 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.Name = strings.TrimSpace(payload.Name)
 	payload.Personality = strings.TrimSpace(payload.Personality)
-	if payload.Name == "" || payload.Personality == "" {
-		http.Error(w, "name and personality are required", http.StatusBadRequest)
+	payload.Gender = strings.TrimSpace(payload.Gender)
+	if payload.Name == "" || payload.Personality == "" || payload.Gender == "" {
+		http.Error(w, "name, personality, and gender are required", http.StatusBadRequest)
 		return
 	}
 
 	llmCtx, llmCancel := context.WithTimeout(r.Context(), llmRequestTimeout)
 	defer llmCancel()
 
+	systemPromptQuery := fmt.Sprintf(
+		`
+			A new agent named '%s' with personality '%s' and gender '%s' has been created.
+			return a system prompt for this agent in raw text format.
+		`,
+		payload.Name,
+		payload.Personality,
+		payload.Gender,
+	)
+
 	systemPrompt, err := h.llm.SendPrompt(
 		llmCtx,
 		"user",
-		fmt.Sprintf(
-			`
-				A new agent named '%s' with personality '%s' has been created.
-				return a system prompt for this agent in raw text format.
-			`,
-			payload.Name,
-			payload.Personality,
-		),
+		systemPromptQuery,
 	)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to generate system prompt: %v", err), http.StatusBadGateway)
@@ -109,6 +114,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	doc := bson.M{
 		"name":          payload.Name,
 		"personality":   payload.Personality,
+		"gender":        payload.Gender,
 		"system_prompt": payload.SystemPrompt,
 		"created_at":    time.Now().UTC(),
 	}
@@ -125,6 +131,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		"id":          result.InsertedID,
 		"name":        payload.Name,
 		"personality": payload.Personality,
+		"gender":      payload.Gender,
 	})
 }
 
