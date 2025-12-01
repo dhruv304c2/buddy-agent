@@ -19,19 +19,22 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const (
-	envMongoDatabase    = "MONGO_DB_NAME"
-	envBaseFaceBucket   = "BASE_FACE_BUCKET"
-	envBaseFacePrefix   = "BASE_FACE_PREFIX"
-	envAWSRegion        = "AWS_REGION"
-	envImageModel       = "GOOGLE_IMAGE_MODEL"
-	defaultMongoDBName  = "buddy-agent"
-	agentsCollection    = "agents"
-	dbRequestTimeout    = 5 * time.Second
-	llmRequestTimeout   = 20 * time.Second
-	imageRequestTimeout = 60 * time.Second
+	envMongoDatabase        = "MONGO_DB_NAME"
+	envBaseFaceBucket       = "BASE_FACE_BUCKET"
+	envBaseFacePrefix       = "BASE_FACE_PREFIX"
+	envAWSRegion            = "AWS_REGION"
+	envImageModel           = "GOOGLE_IMAGE_MODEL"
+	defaultMongoDBName      = "buddy-agent"
+	agentsCollection        = "agents"
+	socialProfileCollection = "agent_social_profiles"
+	dbRequestTimeout        = 5 * time.Second
+	llmRequestTimeout       = 20 * time.Second
+	imageRequestTimeout     = 60 * time.Second
+	socialProfileJobTimeout = 90 * time.Second
 )
 
 // Agent represents the payload used to create a new agent profile.
@@ -133,49 +136,61 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload.SystemPrompt = buildSystemPrompt(payload.Name, payload.Personality, payload.Gender)
-	profileImageURL := ""
 	appearanceDescription, err := h.generateAppearanceDescription(r.Context(), payload)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to generate appearance: %v", err), http.StatusBadGateway)
 		return
 	}
-
+	agentID := primitive.NewObjectID()
 	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
 	defer dbCancel()
 
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
 	doc := bson.M{
+		"_id":                           agentID,
 		"name":                          payload.Name,
 		"personality":                   payload.Personality,
 		"gender":                        payload.Gender,
 		"system_prompt":                 payload.SystemPrompt,
-		"profile_image_url":             profileImageURL,
 		"appearance_description":        appearanceDescription,
 		"base_appearance_referance_url": "",
 		"created_at":                    time.Now().UTC(),
 	}
-	result, err := collection.InsertOne(dbCtx, doc)
-
-	if err != nil {
+	if _, err := collection.InsertOne(dbCtx, doc); err != nil {
 		http.Error(w, fmt.Sprintf("failed to create agent: %v", err), http.StatusInternalServerError)
+		return
+	}
+	cleanupAgent := func(reason string) {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), dbRequestTimeout)
+		defer cleanupCancel()
+		if _, err := collection.DeleteOne(cleanupCtx, bson.M{"_id": agentID}); err != nil {
+			log.Printf("cleanup agent %s after %s failed: %v", agentID.Hex(), reason, err)
+		}
+	}
+	baseImageURL, err := h.generateAndPersistBaseAppearance(r.Context(), agentID)
+	if err != nil {
+		cleanupAgent("base-appearance generation")
+		http.Error(w, fmt.Sprintf("failed to generate base appearance: %v", err), http.StatusBadGateway)
+		return
+	}
+	if err := h.createInitialSocialProfile(r.Context(), agentID, payload.Name); err != nil {
+		cleanupAgent("social-profile placeholder")
+		http.Error(w, fmt.Sprintf("failed to create social profile: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":                            result.InsertedID,
+		"id":                            agentID,
 		"name":                          payload.Name,
 		"personality":                   payload.Personality,
 		"gender":                        payload.Gender,
-		"profile_image_url":             profileImageURL,
+		"profile_image_url":             baseImageURL,
 		"appearance_description":        appearanceDescription,
-		"base_appearance_referance_url": "",
+		"base_appearance_referance_url": baseImageURL,
 	})
-
-	if oid, ok := result.InsertedID.(primitive.ObjectID); ok {
-		h.launchBaseAppearanceJob(oid)
-	}
+	h.launchSocialProfileJob(agentID)
 }
 
 // ListAgents exposes all stored agents without revealing their system prompts.
@@ -217,6 +232,72 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]any{"agents": items}); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+// GetAgentSocialProfile loads the generated social profile for a given agent or profile id.
+func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	query := r.URL.Query()
+	agentIDHex := strings.TrimSpace(query.Get("agentId"))
+	profileIDHex := strings.TrimSpace(query.Get("profileId"))
+
+	var filters []bson.M
+	if agentIDHex != "" {
+		agentID, err := primitive.ObjectIDFromHex(agentIDHex)
+		if err != nil {
+			http.Error(w, "invalid agentId", http.StatusBadRequest)
+			return
+		}
+		filters = append(filters, bson.M{"agent_id": agentID})
+	}
+	if profileIDHex != "" {
+		profileID, err := primitive.ObjectIDFromHex(profileIDHex)
+		if err != nil {
+			http.Error(w, "invalid profileId", http.StatusBadRequest)
+			return
+		}
+		filters = append(filters, bson.M{"_id": profileID})
+	}
+	if len(filters) == 0 {
+		http.Error(w, "agentId or profileId is required", http.StatusBadRequest)
+		return
+	}
+
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
+	defer dbCancel()
+	collection := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
+
+	var profile AgentSocialProfile
+	var lastErr error
+	for _, filter := range filters {
+		if err := collection.FindOne(dbCtx, filter).Decode(&profile); err != nil {
+			lastErr = err
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				continue
+			}
+			break
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		status := http.StatusInternalServerError
+		msg := fmt.Sprintf("failed to load social profile: %v", lastErr)
+		if errors.Is(lastErr, mongo.ErrNoDocuments) {
+			status = http.StatusNotFound
+			msg = "social profile not ready"
+		}
+		http.Error(w, msg, status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(profile); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
 	}
 }
@@ -307,67 +388,137 @@ func buildSystemPrompt(name, personality, gender string) string {
 	))
 }
 
-func (h *Handler) launchBaseAppearanceJob(agentID primitive.ObjectID) {
+func (h *Handler) launchSocialProfileJob(agentID primitive.ObjectID) {
 	if h == nil || agentID.IsZero() {
 		return
 	}
 	go func(id primitive.ObjectID) {
-		ctx, cancel := context.WithTimeout(context.Background(), imageRequestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), socialProfileJobTimeout)
 		defer cancel()
-		if err := h.generateAndPersistBaseAppearance(ctx, id); err != nil {
-			log.Printf("base appearance generation failed for %s: %v", id.Hex(), err)
+		if err := h.generateAndPersistSocialProfile(ctx, id); err != nil {
+			log.Printf("social profile generation failed for %s: %v", id.Hex(), err)
 		}
 	}(agentID)
 }
 
-func (h *Handler) generateAndPersistBaseAppearance(ctx context.Context, agentID primitive.ObjectID) error {
-	if h == nil {
+func (h *Handler) createInitialSocialProfile(ctx context.Context, agentID primitive.ObjectID, username string) error {
+	if h == nil || h.db == nil {
 		return fmt.Errorf("handler not initialized")
 	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = fmt.Sprintf("agent_%s", agentID.Hex())
+	}
+	profiles := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
+	dbCtx, dbCancel := context.WithTimeout(ctx, dbRequestTimeout)
+	defer dbCancel()
+	now := time.Now().UTC()
+	update := bson.M{
+		"$setOnInsert": bson.M{
+			"agent_id":    agentID,
+			"username":    username,
+			"status":      "",
+			"profile_url": "",
+			"created_at":  now,
+		},
+		"$set": bson.M{
+			"updated_at": now,
+		},
+	}
+	opts := options.Update().SetUpsert(true)
+	if _, err := profiles.UpdateOne(dbCtx, bson.M{"agent_id": agentID}, update, opts); err != nil {
+		return fmt.Errorf("upsert initial social profile: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) generateAndPersistBaseAppearance(ctx context.Context, agentID primitive.ObjectID) (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("handler not initialized")
+	}
 	if h.imageGen == nil || h.storage == nil {
-		return fmt.Errorf("image generation dependencies missing")
+		return "", fmt.Errorf("image generation dependencies missing")
 	}
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
 	dbCtx, dbCancel := context.WithTimeout(ctx, dbRequestTimeout)
 	defer dbCancel()
 	var stored Agent
 	if err := collection.FindOne(dbCtx, bson.M{"_id": agentID}).Decode(&stored); err != nil {
-		return fmt.Errorf("load agent for base image: %w", err)
+		return "", fmt.Errorf("load agent for base image: %w", err)
 	}
 	prompt := buildBaseImagePrompt(stored.Name, stored.Personality, stored.Gender, stored.AppearanceDescription)
-	imageBytes, mimeType, err := h.imageGen.GenerateBasePortrait(ctx, prompt)
+	imageBytes, mimeType, err := h.imageGen.GenerateImage(ctx, prompt)
 	if err != nil {
-		return err
+		return "", err
 	}
 	objectName := fmt.Sprintf("%s-base", agentID.Hex())
 	uploadCtx, uploadCancel := context.WithTimeout(ctx, imageRequestTimeout)
 	defer uploadCancel()
 	uri, err := h.storage.UploadImage(uploadCtx, objectName, mimeType, imageBytes)
 	if err != nil {
-		return err
+		return "", err
 	}
 	update := bson.M{
 		"$set": bson.M{
 			"base_appearance_referance_url": uri,
 		},
 	}
-	if strings.TrimSpace(stored.ProfileImageURL) == "" {
-		update["$set"].(bson.M)["profile_image_url"] = uri
-	}
 	updateCtx, updateCancel := context.WithTimeout(ctx, dbRequestTimeout)
 	defer updateCancel()
 	if _, err := collection.UpdateByID(updateCtx, agentID, update); err != nil {
-		return fmt.Errorf("update agent with base image: %w", err)
+		return "", fmt.Errorf("update agent with base image: %w", err)
+	}
+	return uri, nil
+}
+
+func (h *Handler) generateAndPersistSocialProfile(ctx context.Context, agentID primitive.ObjectID) error {
+	if h == nil {
+		return fmt.Errorf("handler not initialized")
+	}
+	if h.db == nil || h.llm == nil || h.imageGen == nil || h.storage == nil {
+		return fmt.Errorf("social profile dependencies missing")
+	}
+	agentCollection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
+	dbCtx, dbCancel := context.WithTimeout(ctx, dbRequestTimeout)
+	defer dbCancel()
+	var stored Agent
+	if err := agentCollection.FindOne(dbCtx, bson.M{"_id": agentID}).Decode(&stored); err != nil {
+		return fmt.Errorf("load agent for social profile: %w", err)
+	}
+	status, err := h.generateSocialStatus(ctx, stored)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	profiles := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
+	updateCtx, updateCancel := context.WithTimeout(ctx, dbRequestTimeout)
+	defer updateCancel()
+	update := bson.M{
+		"$set": bson.M{
+			"status":      status,
+			"profile_url": stored.BaseAppearanceReferenceURL,
+			"updated_at":  now,
+		},
+	}
+	result, err := profiles.UpdateOne(updateCtx, bson.M{"agent_id": agentID}, update)
+	if err != nil {
+		return fmt.Errorf("update social profile: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("social profile placeholder missing for %s", agentID.Hex())
 	}
 	return nil
 }
 
 func buildBaseImagePrompt(name, personality, gender, appearanceDescription string) string {
 	return strings.TrimSpace(fmt.Sprintf(
-		`Create a front-facing, softly lit portrait of %s.
-Appearance details: %s.
-Personality cues: %s. Gender identity: %s.
-Keep the pose relaxed, shoulders square, and expression gentle with a subtle smile so the image can be reused for future generations.`,
+		`
+			Create a front-facing, softly lit portrait of %s.
+			Appearance details: %s.
+			Personality cues: %s. 
+			Gender identity: %s.
+			Keep the pose relaxed, shoulders square, and expression gentle with a subtle smile so the image can be reused for future generations.
+		`,
 		name,
 		appearanceDescription,
 		personality,
@@ -392,13 +543,56 @@ func (h *Handler) generateAppearanceDescription(ctx context.Context, agent Agent
 
 func buildAppearancePrompt(name, personality, gender string) string {
 	return strings.TrimSpace(fmt.Sprintf(
-		`You are crafting a short appearance description for a photorealistic portrait of %s.
-The companion should feel like a real human. Describe their physical features, style, and outfit informed by this personality: %s, and gender identity: %s.
-Focus on visual cues only in 1-2 sentences.`,
+		`
+			You are crafting a short appearance description for a photorealistic portrait of %s.
+			The companion should feel like a real human. Describe their physical features, style, and outfit informed by this personality: %s, and gender identity: %s.
+			Focus on visual cues only in 1-2 sentences.
+		`,
 		name,
 		personality,
 		gender,
 	))
+}
+
+func (h *Handler) generateSocialStatus(ctx context.Context, agent Agent) (string, error) {
+	if h == nil || h.llm == nil {
+		return "", fmt.Errorf("llm client not initialized")
+	}
+	llmCtx, cancel := context.WithTimeout(ctx, llmRequestTimeout)
+	defer cancel()
+	prompt := buildSocialStatusPrompt(agent.Name, agent.Personality)
+	status, err := h.llm.SendPrompt(llmCtx, "user", prompt)
+	if err != nil {
+		return "", fmt.Errorf("social status prompt error: %w", err)
+	}
+	status = sanitizeStatus(status)
+	if status == "" {
+		return "", fmt.Errorf("social status prompt returned empty response")
+	}
+	return status, nil
+}
+
+func buildSocialStatusPrompt(name, personality string) string {
+	return strings.TrimSpace(fmt.Sprintf(
+		`
+			Write a single-sentence social media status line for %s.
+			Keep it upbeat, contemporary, and reflective of this personality: %s.
+			The status should feel like a quick feed update, under 20 words, and avoid hashtags or emojis unless essential.
+		`,
+		name,
+		personality,
+	))
+}
+
+func sanitizeStatus(text string) string {
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if len(runes) > 140 {
+		text = strings.TrimSpace(string(runes[:140]))
+	}
+	return text
 }
 
 func mongoDatabaseName() string {

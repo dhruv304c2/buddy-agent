@@ -46,8 +46,8 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 // Close releases underlying client resources.
 func (s *Service) Close(ctx context.Context) error { return nil }
 
-// GenerateBasePortrait produces an image and returns the raw bytes and mime type.
-func (s *Service) GenerateBasePortrait(ctx context.Context, prompt string) ([]byte, string, error) {
+// GenerateImage produces an image and returns the raw bytes and mime type.
+func (s *Service) GenerateImage(ctx context.Context, prompt string) ([]byte, string, error) {
 	if s == nil || s.client == nil {
 		return nil, "", fmt.Errorf("image client not initialized")
 	}

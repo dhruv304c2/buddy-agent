@@ -25,7 +25,7 @@ func apiVersionPath(path string) string {
 func servicePort() string {
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
-		return "8080"
+		return "3000"
 	}
 	return port
 }
@@ -63,6 +63,7 @@ func Run(ctx context.Context, cfg Config) error {
 	mux.HandleFunc(apiVersionPath("/create/agent"), agentHandler.CreateAgent)
 	mux.HandleFunc(apiVersionPath("/agents"), agentHandler.ListAgents)
 	mux.HandleFunc(apiVersionPath("/agent/chat/agentid"), agentHandler.ChatWithAgent)
+	mux.HandleFunc(apiVersionPath("/agent/social-profile"), agentHandler.GetAgentSocialProfile)
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	errCh := make(chan error, 1)
