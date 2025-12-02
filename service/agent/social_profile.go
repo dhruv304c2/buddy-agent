@@ -218,7 +218,7 @@ func (h *AgentHandler) generateSocialUsername(ctx context.Context, agent Agent) 
 	llmCtx, cancel := context.WithTimeout(ctx, llmRequestTimeout)
 	defer cancel()
 	prompt := buildSocialUsernamePrompt(agent.Name, agent.Personality)
-	username, err := h.llm.SendPrompt(llmCtx, "user", prompt)
+	username, err := h.sendWriterPrompt(llmCtx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("social username prompt error: %w", err)
 	}
@@ -309,7 +309,7 @@ func (h *AgentHandler) generateSocialStatus(ctx context.Context, agent Agent) (s
 	llmCtx, cancel := context.WithTimeout(ctx, llmRequestTimeout)
 	defer cancel()
 	prompt := buildSocialStatusPrompt(agent.Name, agent.Personality)
-	status, err := h.llm.SendPrompt(llmCtx, "user", prompt)
+	status, err := h.sendWriterPrompt(llmCtx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("social status prompt error: %w", err)
 	}

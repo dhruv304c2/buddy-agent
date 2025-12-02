@@ -40,17 +40,23 @@ var (
 )
 
 // NewAgentHandler initializes the Agent handler and underlying dependencies.
+
 func NewAgentHandler(ctx context.Context, usersHandler *userssvc.UserHandler) (*AgentHandler, error) {
 	svc, err := dbservice.New(ctx)
 	if err != nil {
 		return nil, err
 	}
-	llmClient, err := llmservice.NewClient(llmservice.Config{
+	llmConfig := llmservice.Config{
 		APIKey: os.Getenv("GOOGLE_API_KEY"),
 		Model:  os.Getenv("GOOGLE_CHAT_MODEL"),
-	})
+	}
+	llmClient, err := llmservice.NewClient(llmConfig)
 	if err != nil {
 		return nil, fmt.Errorf("init llm client: %w", err)
+	}
+	writerLLM, err := llmservice.NewClient(llmConfig)
+	if err != nil {
+		return nil, fmt.Errorf("init writer llm client: %w", err)
 	}
 	imageClient, err := imagegen.New(ctx, imagegen.Config{
 		APIKey: os.Getenv("GOOGLE_API_KEY"),
@@ -67,7 +73,7 @@ func NewAgentHandler(ctx context.Context, usersHandler *userssvc.UserHandler) (*
 	if err != nil {
 		return nil, fmt.Errorf("init storage service: %w", err)
 	}
-	return &AgentHandler{db: svc, llm: llmClient, imageGen: imageClient, storage: storageSvc, users: usersHandler}, nil
+	return &AgentHandler{db: svc, llm: llmClient, writerLLM: writerLLM, imageGen: imageClient, storage: storageSvc, users: usersHandler}, nil
 }
 
 // Close releases the underlying database resources.
@@ -92,6 +98,14 @@ func respondJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func (h *AgentHandler) sendWriterPrompt(ctx context.Context, prompt string) (string, error) {
+	if h == nil || h.writerLLM == nil {
+		return "", fmt.Errorf("writer llm client not initialized")
+	}
+	h.writerLLM.ResetHistory()
+	return h.writerLLM.SendPrompt(ctx, "user", prompt)
 }
 
 func (h *AgentHandler) userFromRequest(r *http.Request) (*userssvc.User, error) {

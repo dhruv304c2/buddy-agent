@@ -216,7 +216,7 @@ func (h *AgentHandler) generateAppearanceDescription(ctx context.Context, agent 
 	defer cancel()
 
 	prompt := buildAppearancePrompt(agent.Name, agent.Personality, agent.Gender)
-	description, err := h.llm.SendPrompt(llmCtx, "user", prompt)
+	description, err := h.sendWriterPrompt(llmCtx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("appearance prompt error: %w", err)
 	}

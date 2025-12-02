@@ -13,11 +13,12 @@ import (
 
 // AgentHandler coordinates agent related HTTP handlers backed by MongoDB and LLM.
 type AgentHandler struct {
-	db       *dbservice.Service
-	llm      *llmservice.Client
-	imageGen *imagegen.Service
-	storage  *storage.Service
-	users    *userssvc.UserHandler
+	db        *dbservice.Service
+	llm       *llmservice.Client
+	writerLLM *llmservice.Client
+	imageGen  *imagegen.Service
+	storage   *storage.Service
+	users     *userssvc.UserHandler
 }
 
 // Agent represents the payload used to create a new agent profile.
