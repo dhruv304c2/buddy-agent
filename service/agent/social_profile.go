@@ -110,7 +110,7 @@ func (h *AgentHandler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Re
 	}
 	defer cursor.Close(dbCtx)
 
-	var profiles []AgentSocialProfile
+	profiles := make([]AgentSocialProfile, 0)
 	if err := cursor.All(dbCtx, &profiles); err != nil {
 		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load social profiles: %v", err))
 		return
