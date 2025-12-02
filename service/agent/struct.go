@@ -3,8 +3,46 @@ package agent
 import (
 	"time"
 
+	"buddy-agent/service/dbservice"
+	"buddy-agent/service/imagegen"
+	"buddy-agent/service/llmservice"
+	"buddy-agent/service/storage"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+// Handler coordinates agent related HTTP handlers backed by MongoDB and LLM.
+type Handler struct {
+	db       *dbservice.Service
+	llm      *llmservice.Client
+	imageGen *imagegen.Service
+	storage  *storage.Service
+}
+
+// Agent represents the payload used to create a new agent profile.
+type Agent struct {
+	ID                         primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
+	Name                       string             `json:"name" bson:"name"`
+	Personality                string             `json:"personality" bson:"personality"`
+	Gender                     string             `json:"gender" bson:"gender"`
+	SystemPrompt               string             `json:"system_prompt,omitempty" bson:"system_prompt,omitempty"`
+	ProfileImageURL            string             `json:"profile_image_url,omitempty" bson:"profile_image_url,omitempty"`
+	AppearanceDescription      string             `json:"appearance_description,omitempty" bson:"appearance_description,omitempty"`
+	BaseAppearanceReferenceURL string             `json:"base_appearance_referance_url,omitempty" bson:"base_appearance_referance_url,omitempty"`
+}
+
+type agentListItem struct {
+	ID                         primitive.ObjectID `json:"id"`
+	Name                       string             `json:"name"`
+	Personality                string             `json:"personality"`
+	Gender                     string             `json:"gender"`
+	ProfileImageURL            string             `json:"profile_image_url,omitempty"`
+	AppearanceDescription      string             `json:"appearance_description,omitempty"`
+	BaseAppearanceReferenceURL string             `json:"base_appearance_referance_url,omitempty"`
+}
+
+type chatRequest struct {
+	Prompt string `json:"prompt"`
+}
 
 // AgentSocialProfile represents the social presence for an agent that lives
 // separately from the agent profile itself.
