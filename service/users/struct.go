@@ -8,8 +8,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// Handler manages Firebase-authenticated user endpoints backed by MongoDB.
-type Handler struct {
+// UserHandler manages Firebase-authenticated user endpoints backed by MongoDB.
+type UserHandler struct {
 	db   *dbservice.Service
 	auth *auth.Client
 }

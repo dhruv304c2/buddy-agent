@@ -7,15 +7,17 @@ import (
 	"buddy-agent/service/imagegen"
 	"buddy-agent/service/llmservice"
 	"buddy-agent/service/storage"
+	userssvc "buddy-agent/service/users"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// Handler coordinates agent related HTTP handlers backed by MongoDB and LLM.
-type Handler struct {
+// AgentHandler coordinates agent related HTTP handlers backed by MongoDB and LLM.
+type AgentHandler struct {
 	db       *dbservice.Service
 	llm      *llmservice.Client
 	imageGen *imagegen.Service
 	storage  *storage.Service
+	users    *userssvc.UserHandler
 }
 
 // Agent represents the payload used to create a new agent profile.
@@ -28,6 +30,7 @@ type Agent struct {
 	ProfileImageURL            string             `json:"profile_image_url,omitempty" bson:"profile_image_url,omitempty"`
 	AppearanceDescription      string             `json:"appearance_description,omitempty" bson:"appearance_description,omitempty"`
 	BaseAppearanceReferenceURL string             `json:"base_appearance_referance_url,omitempty" bson:"base_appearance_referance_url,omitempty"`
+	CreatedBy                  primitive.ObjectID `json:"created_by,omitempty" bson:"created_by,omitempty"`
 }
 
 type agentListItem struct {

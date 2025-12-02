@@ -14,6 +14,7 @@ import (
 	"buddy-agent/service/imagegen"
 	"buddy-agent/service/llmservice"
 	"buddy-agent/service/storage"
+	userssvc "buddy-agent/service/users"
 )
 
 const (
@@ -32,8 +33,8 @@ const (
 	maxSocialUsernameLength = 20
 )
 
-// NewHandler initializes the Agent handler and underlying dependencies.
-func NewHandler(ctx context.Context) (*Handler, error) {
+// NewAgentHandler initializes the Agent handler and underlying dependencies.
+func NewAgentHandler(ctx context.Context, usersHandler *userssvc.UserHandler) (*AgentHandler, error) {
 	svc, err := dbservice.New(ctx)
 	if err != nil {
 		return nil, err
@@ -60,11 +61,11 @@ func NewHandler(ctx context.Context) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init storage service: %w", err)
 	}
-	return &Handler{db: svc, llm: llmClient, imageGen: imageClient, storage: storageSvc}, nil
+	return &AgentHandler{db: svc, llm: llmClient, imageGen: imageClient, storage: storageSvc, users: usersHandler}, nil
 }
 
 // Close releases the underlying database resources.
-func (h *Handler) Close(ctx context.Context) error {
+func (h *AgentHandler) Close(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}

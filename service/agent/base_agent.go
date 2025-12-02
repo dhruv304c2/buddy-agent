@@ -16,9 +16,28 @@ import (
 )
 
 // CreateAgent handles POST requests to create a new agent document.
-func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h == nil || h.users == nil {
+		respondJSONError(w, http.StatusInternalServerError, "service unavailable")
+		return
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		respondJSONError(w, http.StatusUnauthorized, "missing firebase token")
+		return
+	}
+	firebaseToken := strings.TrimSpace(authHeader[len("Bearer "):])
+	if firebaseToken == "" {
+		respondJSONError(w, http.StatusUnauthorized, "missing firebase token")
+		return
+	}
+	creator, err := h.users.FetchUserByToken(r.Context(), firebaseToken)
+	if err != nil {
+		respondJSONError(w, http.StatusUnauthorized, "invalid firebase token")
 		return
 	}
 
@@ -56,6 +75,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		"system_prompt":                 payload.SystemPrompt,
 		"appearance_description":        appearanceDescription,
 		"base_appearance_referance_url": "",
+		"created_by":                    creator.ID,
 		"created_at":                    time.Now().UTC(),
 	}
 	if _, err := collection.InsertOne(dbCtx, doc); err != nil {
@@ -96,7 +116,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListAgents exposes all stored agents without revealing their system prompts.
-func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -139,7 +159,7 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 // ChatWithAgent receives a prompt for an existing agent and forwards it to the LLM.
-func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -203,7 +223,7 @@ func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) generateAppearanceDescription(ctx context.Context, agent Agent) (string, error) {
+func (h *AgentHandler) generateAppearanceDescription(ctx context.Context, agent Agent) (string, error) {
 	if h == nil || h.llm == nil {
 		return "", fmt.Errorf("llm client not initialized")
 	}
@@ -260,7 +280,7 @@ func buildBaseImagePrompt(name, personality, gender, appearanceDescription strin
 	))
 }
 
-func (h *Handler) generateAndPersistBaseAppearance(ctx context.Context, agentID primitive.ObjectID) (string, error) {
+func (h *AgentHandler) generateAndPersistBaseAppearance(ctx context.Context, agentID primitive.ObjectID) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("handler not initialized")
 	}

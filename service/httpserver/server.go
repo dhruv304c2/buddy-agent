@@ -46,16 +46,16 @@ func Run(ctx context.Context, cfg Config) error {
 		addr = fmt.Sprintf(":%s", servicePort())
 	}
 
-	agentHandler, err := agent.NewHandler(ctx)
-	if err != nil {
-		return fmt.Errorf("init agent handler: %w", err)
-	}
-	defer agentHandler.Close(context.Background())
-	usersHandler, err := users.NewHandler(ctx)
+	usersHandler, err := users.NewUserHandler(ctx)
 	if err != nil {
 		return fmt.Errorf("init users handler: %w", err)
 	}
 	defer usersHandler.Close(context.Background())
+	agentHandler, err := agent.NewAgentHandler(ctx, usersHandler)
+	if err != nil {
+		return fmt.Errorf("init agent handler: %w", err)
+	}
+	defer agentHandler.Close(context.Background())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(apiVersionPath(""), func(w http.ResponseWriter, r *http.Request) {

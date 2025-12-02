@@ -13,7 +13,7 @@ import (
 )
 
 // Login verifies the Firebase ID token and upserts the user document.
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

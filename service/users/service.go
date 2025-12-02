@@ -20,8 +20,8 @@ const (
 	dbRequestTimeout   = 5 * time.Second
 )
 
-// NewHandler builds the users handler with Firebase Auth and Mongo dependencies.
-func NewHandler(ctx context.Context) (*Handler, error) {
+// NewUserHandler builds the users handler with Firebase Auth and Mongo dependencies.
+func NewUserHandler(ctx context.Context) (*UserHandler, error) {
 	svc, err := dbservice.New(ctx)
 	if err != nil {
 		return nil, err
@@ -34,11 +34,11 @@ func NewHandler(ctx context.Context) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init firebase auth: %w", err)
 	}
-	return &Handler{db: svc, auth: authClient}, nil
+	return &UserHandler{db: svc, auth: authClient}, nil
 }
 
 // Close releases resources held by the handler.
-func (h *Handler) Close(ctx context.Context) error {
+func (h *UserHandler) Close(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}

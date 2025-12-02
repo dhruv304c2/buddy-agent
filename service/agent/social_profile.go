@@ -18,7 +18,7 @@ import (
 )
 
 // GetAgentSocialProfile loads the generated social profile for a given agent or profile id.
-func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -84,7 +84,7 @@ func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) 
 }
 
 // ListAgentSocialProfiles returns every stored post-generation social profile document.
-func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -112,7 +112,7 @@ func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (h *Handler) createInitialSocialProfile(ctx context.Context, agentID primitive.ObjectID, username string) error {
+func (h *AgentHandler) createInitialSocialProfile(ctx context.Context, agentID primitive.ObjectID, username string) error {
 	if h == nil || h.db == nil {
 		return fmt.Errorf("handler not initialized")
 	}
@@ -143,7 +143,7 @@ func (h *Handler) createInitialSocialProfile(ctx context.Context, agentID primit
 	return nil
 }
 
-func (h *Handler) launchSocialProfileJob(agentID primitive.ObjectID) {
+func (h *AgentHandler) launchSocialProfileJob(agentID primitive.ObjectID) {
 	if h == nil {
 		return
 	}
@@ -156,7 +156,7 @@ func (h *Handler) launchSocialProfileJob(agentID primitive.ObjectID) {
 	}(agentID)
 }
 
-func (h *Handler) generateAndPersistSocialProfile(ctx context.Context, agentID primitive.ObjectID) error {
+func (h *AgentHandler) generateAndPersistSocialProfile(ctx context.Context, agentID primitive.ObjectID) error {
 	if h == nil {
 		return fmt.Errorf("handler not initialized")
 	}
@@ -200,7 +200,7 @@ func (h *Handler) generateAndPersistSocialProfile(ctx context.Context, agentID p
 	return nil
 }
 
-func (h *Handler) generateSocialUsername(ctx context.Context, agent Agent) (string, error) {
+func (h *AgentHandler) generateSocialUsername(ctx context.Context, agent Agent) (string, error) {
 	if h == nil || h.llm == nil {
 		return "", fmt.Errorf("llm client not initialized")
 	}
@@ -291,7 +291,7 @@ func fallbackSocialUsername(agent Agent, seed string) string {
 	return candidate
 }
 
-func (h *Handler) generateSocialStatus(ctx context.Context, agent Agent) (string, error) {
+func (h *AgentHandler) generateSocialStatus(ctx context.Context, agent Agent) (string, error) {
 	if h == nil || h.llm == nil {
 		return "", fmt.Errorf("llm client not initialized")
 	}
