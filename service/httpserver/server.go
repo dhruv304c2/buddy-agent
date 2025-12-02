@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"buddy-agent/service/agent"
+	"buddy-agent/service/users"
 )
 
 const apiVersionPrefix = "/api/v1"
@@ -50,6 +51,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("init agent handler: %w", err)
 	}
 	defer agentHandler.Close(context.Background())
+	usersHandler, err := users.NewHandler(ctx)
+	if err != nil {
+		return fmt.Errorf("init users handler: %w", err)
+	}
+	defer usersHandler.Close(context.Background())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(apiVersionPath(""), func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +68,7 @@ func Run(ctx context.Context, cfg Config) error {
 	})
 	mux.HandleFunc(apiVersionPath("/create/agent"), agentHandler.CreateAgent)
 	mux.HandleFunc(apiVersionPath("/agents"), agentHandler.ListAgents)
+	mux.HandleFunc(apiVersionPath("/login"), usersHandler.Login)
 	mux.HandleFunc(apiVersionPath("/agent/chat/agentid"), agentHandler.ChatWithAgent)
 	mux.HandleFunc(apiVersionPath("/agent/social-profile"), agentHandler.GetAgentSocialProfile)
 	mux.HandleFunc(apiVersionPath("/agent/social-profiles"), agentHandler.ListAgentSocialProfiles)
