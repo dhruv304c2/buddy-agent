@@ -55,6 +55,7 @@ type AgentSocialProfile struct {
 	Username   string             `json:"username" bson:"username"`
 	Status     string             `json:"status" bson:"status"`
 	ProfileURL string             `json:"profile_url" bson:"profile_url"`
+	CreatedBy  primitive.ObjectID `json:"created_by" bson:"created_by"`
 	CreatedAt  time.Time          `json:"created_at" bson:"created_at"`
 	UpdatedAt  time.Time          `json:"updated_at" bson:"updated_at"`
 }

@@ -21,23 +21,8 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h == nil || h.users == nil {
-		respondJSONError(w, http.StatusInternalServerError, "service unavailable")
-		return
-	}
-	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-		respondJSONError(w, http.StatusUnauthorized, "missing firebase token")
-		return
-	}
-	firebaseToken := strings.TrimSpace(authHeader[len("Bearer "):])
-	if firebaseToken == "" {
-		respondJSONError(w, http.StatusUnauthorized, "missing firebase token")
-		return
-	}
-	creator, err := h.users.FetchUserByToken(r.Context(), firebaseToken)
-	if err != nil {
-		respondJSONError(w, http.StatusUnauthorized, "invalid firebase token")
+	creator, ok := h.requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -95,7 +80,7 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		respondJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to generate base appearance: %v", err))
 		return
 	}
-	if err := h.createInitialSocialProfile(r.Context(), agentID, payload.Name); err != nil {
+	if err := h.createInitialSocialProfile(r.Context(), agentID, payload.Name, creator.ID); err != nil {
 		cleanupAgent("social-profile placeholder")
 		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create social profile: %v", err))
 		return

@@ -23,6 +23,10 @@ func (h *AgentHandler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Requ
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	requester, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	agentIDHex := strings.TrimSpace(query.Get("agentId"))
 	profileIDHex := strings.TrimSpace(query.Get("profileId"))
@@ -56,6 +60,7 @@ func (h *AgentHandler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Requ
 	var profile AgentSocialProfile
 	var lastErr error
 	for _, filter := range filters {
+		filter["created_by"] = requester.ID
 		if err := collection.FindOne(dbCtx, filter).Decode(&profile); err != nil {
 			lastErr = err
 			if errors.Is(err, mongo.ErrNoDocuments) {
@@ -89,11 +94,16 @@ func (h *AgentHandler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Re
 		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	requester, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
 
 	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
 	defer dbCancel()
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
-	cursor, err := collection.Find(dbCtx, bson.D{})
+	filter := bson.M{"created_by": requester.ID}
+	cursor, err := collection.Find(dbCtx, filter)
 	if err != nil {
 		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to fetch social profiles: %v", err))
 		return
@@ -112,7 +122,7 @@ func (h *AgentHandler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func (h *AgentHandler) createInitialSocialProfile(ctx context.Context, agentID primitive.ObjectID, username string) error {
+func (h *AgentHandler) createInitialSocialProfile(ctx context.Context, agentID primitive.ObjectID, username string, createdBy primitive.ObjectID) error {
 	if h == nil || h.db == nil {
 		return fmt.Errorf("handler not initialized")
 	}
@@ -130,6 +140,7 @@ func (h *AgentHandler) createInitialSocialProfile(ctx context.Context, agentID p
 			"username":    username,
 			"status":      "",
 			"profile_url": "",
+			"created_by":  createdBy,
 			"created_at":  now,
 		},
 		"$set": bson.M{

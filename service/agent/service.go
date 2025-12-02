@@ -33,6 +33,12 @@ const (
 	maxSocialUsernameLength = 20
 )
 
+var (
+	errServiceUnavailable = errors.New("service unavailable")
+	errMissingAuthToken   = errors.New("missing firebase token")
+	errInvalidAuthToken   = errors.New("invalid firebase token")
+)
+
 // NewAgentHandler initializes the Agent handler and underlying dependencies.
 func NewAgentHandler(ctx context.Context, usersHandler *userssvc.UserHandler) (*AgentHandler, error) {
 	svc, err := dbservice.New(ctx)
@@ -86,4 +92,47 @@ func respondJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func (h *AgentHandler) userFromRequest(r *http.Request) (*userssvc.User, error) {
+	if h == nil || h.users == nil {
+		return nil, errServiceUnavailable
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(authHeader) < len("Bearer ")+1 {
+		return nil, errMissingAuthToken
+	}
+	prefix := authHeader[:len("Bearer ")]
+	if !strings.EqualFold(prefix, "Bearer ") {
+		return nil, errMissingAuthToken
+	}
+	token := strings.TrimSpace(authHeader[len("Bearer "):])
+	if token == "" {
+		return nil, errMissingAuthToken
+	}
+	user, err := h.users.FetchUserByToken(r.Context(), token)
+	if err != nil {
+		return nil, errInvalidAuthToken
+	}
+	return user, nil
+}
+
+func (h *AgentHandler) requireUser(w http.ResponseWriter, r *http.Request) (*userssvc.User, bool) {
+	user, err := h.userFromRequest(r)
+	if err == nil {
+		return user, true
+	}
+	status := http.StatusUnauthorized
+	switch {
+	case errors.Is(err, errServiceUnavailable):
+		status = http.StatusInternalServerError
+	case errors.Is(err, errMissingAuthToken):
+		status = http.StatusUnauthorized
+	case errors.Is(err, errInvalidAuthToken):
+		status = http.StatusUnauthorized
+	default:
+		status = http.StatusUnauthorized
+	}
+	respondJSONError(w, status, err.Error())
+	return nil, false
 }
