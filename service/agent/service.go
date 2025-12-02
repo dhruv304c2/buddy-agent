@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"buddy-agent/service/dbservice"
 	"buddy-agent/service/imagegen"
@@ -35,6 +36,7 @@ const (
 	llmRequestTimeout       = 20 * time.Second
 	imageRequestTimeout     = 60 * time.Second
 	socialProfileJobTimeout = 90 * time.Second
+	maxSocialUsernameLength = 20
 )
 
 // Agent represents the payload used to create a new agent profile.
@@ -116,7 +118,7 @@ func (h *Handler) Close(ctx context.Context) error {
 // CreateAgent handles POST requests to create a new agent document.
 func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -124,21 +126,21 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 	payload.Name = strings.TrimSpace(payload.Name)
 	payload.Personality = strings.TrimSpace(payload.Personality)
 	payload.Gender = strings.TrimSpace(payload.Gender)
 	if payload.Name == "" || payload.Personality == "" || payload.Gender == "" {
-		http.Error(w, "name, personality, and gender are required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "name, personality, and gender are required")
 		return
 	}
 
 	payload.SystemPrompt = buildSystemPrompt(payload.Name, payload.Personality, payload.Gender)
 	appearanceDescription, err := h.generateAppearanceDescription(r.Context(), payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate appearance: %v", err), http.StatusBadGateway)
+		respondJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to generate appearance: %v", err))
 		return
 	}
 	agentID := primitive.NewObjectID()
@@ -157,7 +159,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		"created_at":                    time.Now().UTC(),
 	}
 	if _, err := collection.InsertOne(dbCtx, doc); err != nil {
-		http.Error(w, fmt.Sprintf("failed to create agent: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create agent: %v", err))
 		return
 	}
 	cleanupAgent := func(reason string) {
@@ -170,12 +172,12 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	baseImageURL, err := h.generateAndPersistBaseAppearance(r.Context(), agentID)
 	if err != nil {
 		cleanupAgent("base-appearance generation")
-		http.Error(w, fmt.Sprintf("failed to generate base appearance: %v", err), http.StatusBadGateway)
+		respondJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to generate base appearance: %v", err))
 		return
 	}
 	if err := h.createInitialSocialProfile(r.Context(), agentID, payload.Name); err != nil {
 		cleanupAgent("social-profile placeholder")
-		http.Error(w, fmt.Sprintf("failed to create social profile: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create social profile: %v", err))
 		return
 	}
 
@@ -196,7 +198,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 // ListAgents exposes all stored agents without revealing their system prompts.
 func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -206,14 +208,14 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(agentsCollection)
 	cursor, err := collection.Find(dbCtx, bson.D{})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to fetch agents: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to fetch agents: %v", err))
 		return
 	}
 	defer cursor.Close(dbCtx)
 
 	var stored []Agent
 	if err := cursor.All(dbCtx, &stored); err != nil {
-		http.Error(w, fmt.Sprintf("failed to load agents: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load agents: %v", err))
 		return
 	}
 
@@ -232,14 +234,14 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]any{"agents": items}); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
 	}
 }
 
 // GetAgentSocialProfile loads the generated social profile for a given agent or profile id.
 func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	query := r.URL.Query()
@@ -250,7 +252,7 @@ func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) 
 	if agentIDHex != "" {
 		agentID, err := primitive.ObjectIDFromHex(agentIDHex)
 		if err != nil {
-			http.Error(w, "invalid agentId", http.StatusBadRequest)
+			respondJSONError(w, http.StatusBadRequest, "invalid agentId")
 			return
 		}
 		filters = append(filters, bson.M{"agent_id": agentID})
@@ -258,13 +260,13 @@ func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) 
 	if profileIDHex != "" {
 		profileID, err := primitive.ObjectIDFromHex(profileIDHex)
 		if err != nil {
-			http.Error(w, "invalid profileId", http.StatusBadRequest)
+			respondJSONError(w, http.StatusBadRequest, "invalid profileId")
 			return
 		}
 		filters = append(filters, bson.M{"_id": profileID})
 	}
 	if len(filters) == 0 {
-		http.Error(w, "agentId or profileId is required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "agentId or profileId is required")
 		return
 	}
 
@@ -292,20 +294,20 @@ func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) 
 			status = http.StatusNotFound
 			msg = "social profile not ready"
 		}
-		http.Error(w, msg, status)
+		respondJSONError(w, status, msg)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(profile); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
 	}
 }
 
 // ListAgentSocialProfiles returns every stored social profile document.
 func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -314,20 +316,20 @@ func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request
 	collection := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
 	cursor, err := collection.Find(dbCtx, bson.D{})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to fetch social profiles: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to fetch social profiles: %v", err))
 		return
 	}
 	defer cursor.Close(dbCtx)
 
 	var profiles []AgentSocialProfile
 	if err := cursor.All(dbCtx, &profiles); err != nil {
-		http.Error(w, fmt.Sprintf("failed to load social profiles: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load social profiles: %v", err))
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]any{"profiles": profiles}); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
 	}
 }
 
@@ -335,18 +337,18 @@ func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request
 // forwards the combined input to the LLM before returning the assistant response.
 func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		respondJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	agentIDHex := strings.TrimSpace(r.URL.Query().Get("agentId"))
 	if agentIDHex == "" {
-		http.Error(w, "agentId is required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "agentId is required")
 		return
 	}
 	agentID, err := primitive.ObjectIDFromHex(agentIDHex)
 	if err != nil {
-		http.Error(w, "invalid agentId", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "invalid agentId")
 		return
 	}
 
@@ -354,12 +356,12 @@ func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
 
@@ -374,7 +376,7 @@ func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 			msg = "agent not found"
 		}
-		http.Error(w, msg, status)
+		respondJSONError(w, status, msg)
 		return
 	}
 
@@ -384,7 +386,7 @@ func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.llm.SendPrompt(llmCtx, "user", combinedPrompt)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to fetch response: %v", err), http.StatusBadGateway)
+		respondJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to fetch response: %v", err))
 		return
 	}
 
@@ -393,7 +395,7 @@ func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {
 		"agent_id": agentIDHex,
 		"response": response,
 	}); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
 	}
 }
 
@@ -514,6 +516,10 @@ func (h *Handler) generateAndPersistSocialProfile(ctx context.Context, agentID p
 	if err := agentCollection.FindOne(dbCtx, bson.M{"_id": agentID}).Decode(&stored); err != nil {
 		return fmt.Errorf("load agent for social profile: %w", err)
 	}
+	username, err := h.generateSocialUsername(ctx, stored)
+	if err != nil {
+		return err
+	}
 	status, err := h.generateSocialStatus(ctx, stored)
 	if err != nil {
 		return err
@@ -524,6 +530,7 @@ func (h *Handler) generateAndPersistSocialProfile(ctx context.Context, agentID p
 	defer updateCancel()
 	update := bson.M{
 		"$set": bson.M{
+			"username":    username,
 			"status":      status,
 			"profile_url": stored.BaseAppearanceReferenceURL,
 			"updated_at":  now,
@@ -583,6 +590,97 @@ func buildAppearancePrompt(name, personality, gender string) string {
 	))
 }
 
+func (h *Handler) generateSocialUsername(ctx context.Context, agent Agent) (string, error) {
+	if h == nil || h.llm == nil {
+		return "", fmt.Errorf("llm client not initialized")
+	}
+	llmCtx, cancel := context.WithTimeout(ctx, llmRequestTimeout)
+	defer cancel()
+	prompt := buildSocialUsernamePrompt(agent.Name, agent.Personality)
+	username, err := h.llm.SendPrompt(llmCtx, "user", prompt)
+	if err != nil {
+		return "", fmt.Errorf("social username prompt error: %w", err)
+	}
+	username = sanitizeUsername(username)
+	if username == "" {
+		username = fallbackSocialUsername(agent, agent.Name)
+	}
+	agentHandle := sanitizeUsername(agent.Name)
+	if agentHandle != "" && username == agentHandle {
+		username = fallbackSocialUsername(agent, username)
+	}
+	if username == "" {
+		return "", fmt.Errorf("social username prompt returned empty response")
+	}
+	return username, nil
+}
+
+func buildSocialUsernamePrompt(name, personality string) string {
+	return strings.TrimSpace(fmt.Sprintf(
+		`
+			Invent a short social-media style username for %s that feels modern and slightly playful.
+			It must differ from the literal name and echo this personality: %s.
+			Return only the username, under 20 characters, using letters, numbers, or underscores with no spaces.
+		`,
+		name,
+		personality,
+	))
+}
+
+func sanitizeUsername(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "@")
+	text = strings.ReplaceAll(text, " ", "")
+	if text == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range text {
+		switch {
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '_' || r == '.':
+			builder.WriteRune(r)
+		default:
+			lower := unicode.ToLower(r)
+			if lower >= 'a' && lower <= 'z' {
+				builder.WriteRune(lower)
+			}
+		}
+	}
+	username := strings.Trim(builder.String(), "._")
+	if username == "" {
+		return ""
+	}
+	runes := []rune(username)
+	if len(runes) > maxSocialUsernameLength {
+		username = string(runes[:maxSocialUsernameLength])
+	}
+	return username
+}
+
+func fallbackSocialUsername(agent Agent, seed string) string {
+	base := sanitizeUsername(seed)
+	if base == "" {
+		base = sanitizeUsername(agent.Name)
+	}
+	if base == "" {
+		base = "agent"
+	}
+	suffix := agent.ID.Hex()
+	if suffix == "" {
+		suffix = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	if len(suffix) > 4 {
+		suffix = suffix[:4]
+	}
+	candidate := sanitizeUsername(fmt.Sprintf("%s_%s", base, suffix))
+	if candidate == "" {
+		candidate = sanitizeUsername(fmt.Sprintf("buddy_%s", suffix))
+	}
+	return candidate
+}
+
 func (h *Handler) generateSocialStatus(ctx context.Context, agent Agent) (string, error) {
 	if h == nil || h.llm == nil {
 		return "", fmt.Errorf("llm client not initialized")
@@ -622,6 +720,12 @@ func sanitizeStatus(text string) string {
 		text = strings.TrimSpace(string(runes[:140]))
 	}
 	return text
+}
+
+func respondJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func mongoDatabaseName() string {
