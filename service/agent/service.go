@@ -302,6 +302,35 @@ func (h *Handler) GetAgentSocialProfile(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// ListAgentSocialProfiles returns every stored social profile document.
+func (h *Handler) ListAgentSocialProfiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), dbRequestTimeout)
+	defer dbCancel()
+	collection := h.db.Client().Database(mongoDatabaseName()).Collection(socialProfileCollection)
+	cursor, err := collection.Find(dbCtx, bson.D{})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to fetch social profiles: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(dbCtx)
+
+	var profiles []AgentSocialProfile
+	if err := cursor.All(dbCtx, &profiles); err != nil {
+		http.Error(w, fmt.Sprintf("failed to load social profiles: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{"profiles": profiles}); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
 // ChatWithAgent receives a prompt for an existing agent, loads its system prompt, and
 // forwards the combined input to the LLM before returning the assistant response.
 func (h *Handler) ChatWithAgent(w http.ResponseWriter, r *http.Request) {

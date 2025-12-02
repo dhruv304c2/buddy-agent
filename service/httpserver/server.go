@@ -64,6 +64,7 @@ func Run(ctx context.Context, cfg Config) error {
 	mux.HandleFunc(apiVersionPath("/agents"), agentHandler.ListAgents)
 	mux.HandleFunc(apiVersionPath("/agent/chat/agentid"), agentHandler.ChatWithAgent)
 	mux.HandleFunc(apiVersionPath("/agent/social-profile"), agentHandler.GetAgentSocialProfile)
+	mux.HandleFunc(apiVersionPath("/agent/social-profiles"), agentHandler.ListAgentSocialProfiles)
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	errCh := make(chan error, 1)
