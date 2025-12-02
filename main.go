@@ -122,8 +122,12 @@ func ensureDefaultCredentials(path string) {
 }
 
 func defaultServiceAddr() string {
-	if addr := strings.TrimSpace(os.Getenv("PORT")); addr != "" {
+	addr := strings.TrimSpace(os.Getenv("PORT"))
+	if addr == "" {
+		return ":3000"
+	}
+	if strings.Contains(addr, ":") || strings.HasPrefix(addr, ":") {
 		return addr
 	}
-	return ":3000"
+	return ":" + addr
 }
